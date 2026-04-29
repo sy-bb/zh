@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>矿池数据看板</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+  <script src="config.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --border:    #2a2d3a;
+      --text:      #e2e8f0;
+      --muted:     #8892a4;
+      --antpool:   #f59e0b;
+      --f2pool:    #3b82f6;
+      --green:     #10b981;
+      --red:       #ef4444;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    header h1 { font-size: 1.3rem; font-weight: 600; }
+    #last-updated { font-size: 0.8rem; color: var(--muted); }
+
+    .legend { display: flex; gap: 16px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+
+    main { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+
+    /* Summary cards */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card .label { font-size: 0.78rem; color: var(--muted); margin-bottom: 8px; }
+    .card .value { font-size: 1.55rem; font-weight: 700; }
+    .card .sub   { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+    .card.antpool { border-left: 3px solid var(--antpool); }
+    .card.f2pool  { border-left: 3px solid var(--f2pool); }
+    .card.total   { border-left: 3px solid var(--green); }
+
+    /* Pool tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .tab {
+      padding: 6px 18px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 0.85rem;
+      background: transparent;
+      color: var(--muted);
+      transition: all .2s;
+    }
+    .tab.active { background: var(--f2pool); border-color: var(--f2pool); color: #fff; }
+    .tab.antpool.active { background: var(--antpool); border-color: var(--antpool); color: #000; }
+
+    /* Charts */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 28px;
+    }
+    @media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
+
+    .chart-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .chart-box h3 { font-size: 0.9rem; color: var(--muted); margin-bottom: 16px; }
+    .chart-box canvas { max-height: 240px; }
+
+    /* Table */
+    .table-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .table-box h3 { font-size: 0.9rem; color: var(--muted); padding: 16px 20px; border-bottom: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 500; padding: 10px 16px; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    td { padding: 10px 16px; border-top: 1px solid var(--border); text-align: right; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .pool-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .pool-badge.antpool { background: rgba(245,158,11,.15); color: var(--antpool); }
+    .pool-badge.f2pool  { background: rgba(59,130,246,.15); color: var(--f2pool); }
+
+    #loading { text-align: center; padding: 60px; color: var(--muted); }
+    #error   { color: var(--red); text-align: center; padding: 40px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>矿池数据看板</h1>
+    <div class="legend" style="margin-top:6px">
+      <span><span class="legend-dot" style="background:var(--antpool)"></span>Antpool</span>
+      <span><span class="legend-dot" style="background:var(--f2pool)"></span>F2Pool</span>
+    </div>
+  </div>
+  <div id="last-updated">加载中...</div>
+</header>
+
+<main>
+  <div id="loading">正在加载数据...</div>
+  <div id="error" style="display:none"></div>
+
+  <div id="dashboard" style="display:none">
+
+    <!-- 汇总卡片 -->
+    <div class="cards" id="summary-cards"></div>
+
+    <!-- 图表 -->
+    <div class="charts-grid">
+      <div class="chart-box">
+        <h3>日算力趋势 (TH/s)</h3>
+        <canvas id="chart-hashrate"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>算力构成（自有 vs 转出）— 最近30天均值</h3>
+        <canvas id="chart-hashrate-split"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>每日总收益 (BTC)</h3>
+        <canvas id="chart-earnings"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>收益构成（FPPS + 奖励）— 近30天</h3>
+        <canvas id="chart-earnings-split"></canvas>
+      </div>
+    </div>
+
+    <!-- 明细表格 -->
+    <div class="table-box">
+      <h3>历史明细（最近60天）</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>矿池</th>
+            <th>日算力 (TH/s)</th>
+            <th>自有算力 (TH/s)</th>
+            <th>转出算力 (TH/s)</th>
+            <th>FPPS收益 (BTC)</th>
+            <th>奖励 (BTC)</th>
+            <th>总收益 (BTC)</th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+
+  </div>
+</main>
+
+<script>
+// ── Supabase 初始化 ──────────────────────────────────────────
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ── 全局数据 ─────────────────────────────────────────────────
+let allRows = [];
+
+// ── 工具函数 ─────────────────────────────────────────────────
+const fmt = (v, d = 2) => v == null ? '—' : Number(v).toFixed(d);
+const fmtBTC = v => v == null ? '—' : Number(v).toFixed(8);
+const ANTPOOL_COLOR = '#f59e0b';
+const F2POOL_COLOR  = '#3b82f6';
+
+function groupByPool(rows, pool) {
+  return rows.filter(r => r.pool === pool);
+}
+
+function last30Dates(rows) {
+  const dates = [...new Set(rows.map(r => r.date))].sort().slice(-30);
+  return dates;
+}
+
+// ── 图表公共配置 ─────────────────────────────────────────────
+Chart.defaults.color = '#8892a4';
+Chart.defaults.borderColor = '#2a2d3a';
+
+function lineDataset(label, data, color, fill = false) {
+  return {
+    label, data,
+    borderColor: color,
+    backgroundColor: fill ? color + '22' : 'transparent',
+    borderWidth: 2,
+    pointRadius: 3,
+    tension: 0.3,
+    fill,
+  };
+}
+
+function barDataset(label, data, color) {
+  return {
+    label, data,
+    backgroundColor: color + 'cc',
+    borderColor: color,
+    borderWidth: 1,
+    borderRadius: 4,
+  };
+}
+
+const baseOpts = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: { legend: { position: 'top' }, datalabels: { display: false } },
+  scales: {
+    x: { grid: { color: '#2a2d3a' } },
+    y: { grid: { color: '#2a2d3a' } },
+  },
+};
+
+// ── 渲染函数 ─────────────────────────────────────────────────
+function renderSummaryCards(rows) {
+  const today = rows.filter(r => r.date === rows[0]?.date);
+  const ant = today.find(r => r.pool === 'antpool') || {};
+  const f2  = today.find(r => r.pool === 'f2pool')  || {};
+  const totalEarnings = ((ant.total_earnings_btc || 0) + (f2.total_earnings_btc || 0));
+
+  const cards = [
+    { cls: 'antpool', label: 'Antpool 日算力', value: fmt(ant.hashrate_th) + ' TH/s', sub: `自有 ${fmt(ant.own_hashrate_th)} / 转出 ${fmt(ant.transferred_hashrate_th)}` },
+    { cls: 'antpool', label: 'Antpool 总收益', value: fmtBTC(ant.total_earnings_btc) + ' BTC', sub: `FPPS ${fmtBTC(ant.fpps_earnings_btc)} + 奖励 ${fmtBTC(ant.rewards_btc)}` },
+    { cls: 'f2pool',  label: 'F2Pool 日算力',  value: fmt(f2.hashrate_th) + ' TH/s',  sub: `自有 ${fmt(f2.own_hashrate_th)} / 转出 ${fmt(f2.transferred_hashrate_th)}` },
+    { cls: 'f2pool',  label: 'F2Pool 总收益',  value: fmtBTC(f2.total_earnings_btc) + ' BTC',  sub: `FPPS ${fmtBTC(f2.fpps_earnings_btc)} + 奖励 ${fmtBTC(f2.rewards_btc)}` },
+    { cls: 'total',   label: '今日双池合计',    value: totalEarnings.toFixed(8) + ' BTC', sub: today[0]?.date || '' },
+  ];
+
+  document.getElementById('summary-cards').innerHTML = cards.map(c => `
+    <div class="card ${c.cls}">
+      <div class="label">${c.label}</div>
+      <div class="value">${c.value}</div>
+      <div class="sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+function renderHashrateChart(rows) {
+  const dates = last30Dates(rows);
+  const antMap = Object.fromEntries(groupByPool(rows, 'antpool').map(r => [r.date, r.hashrate_th]));
+  const f2Map  = Object.fromEntries(groupByPool(rows, 'f2pool').map(r => [r.date, r.hashrate_th]));
+
+  new Chart(document.getElementById('chart-hashrate'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [
+        lineDataset('Antpool', dates.map(d => antMap[d] ?? null), ANTPOOL_COLOR),
+        lineDataset('F2Pool',  dates.map(d => f2Map[d]  ?? null), F2POOL_COLOR),
+      ],
+    },
+    options: { ...baseOpts },
+  });
+}
+
+function renderHashrateSplitChart(rows) {
+  const dates = last30Dates(rows);
+  const pools = ['antpool', 'f2pool'];
+  const colors = [ANTPOOL_COLOR, F2POOL_COLOR];
+
+  const datasets = [];
+  pools.forEach((pool, i) => {
+    const map = Object.fromEntries(groupByPool(rows, pool).map(r => [r.date, r]));
+    datasets.push(barDataset(`${pool === 'antpool' ? 'Antpool' : 'F2Pool'} 自有`, dates.map(d => map[d]?.own_hashrate_th ?? null), colors[i]));
+    datasets.push({ ...barDataset(`${pool === 'antpool' ? 'Antpool' : 'F2Pool'} 转出`, dates.map(d => map[d]?.transferred_hashrate_th ?? null), colors[i] + '66'), borderDash: [4,2] });
+  });
+
+  new Chart(document.getElementById('chart-hashrate-split'), {
+    type: 'bar',
+    data: { labels: dates, datasets },
+    options: { ...baseOpts, scales: { ...baseOpts.scales, x: { ...baseOpts.scales.x, stacked: false } } },
+  });
+}
+
+function renderEarningsChart(rows) {
+  const dates = last30Dates(rows);
+  const antMap = Object.fromEntries(groupByPool(rows, 'antpool').map(r => [r.date, r.total_earnings_btc]));
+  const f2Map  = Object.fromEntries(groupByPool(rows, 'f2pool').map(r => [r.date, r.total_earnings_btc]));
+
+  new Chart(document.getElementById('chart-earnings'), {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: [
+        barDataset('Antpool', dates.map(d => antMap[d] ?? null), ANTPOOL_COLOR),
+        barDataset('F2Pool',  dates.map(d => f2Map[d]  ?? null), F2POOL_COLOR),
+      ],
+    },
+    options: { ...baseOpts },
+  });
+}
+
+function renderEarningsSplitChart(rows) {
+  const dates = last30Dates(rows);
+  const pools = ['antpool', 'f2pool'];
+  const colors = [ANTPOOL_COLOR, F2POOL_COLOR];
+
+  const datasets = [];
+  pools.forEach((pool, i) => {
+    const map = Object.fromEntries(groupByPool(rows, pool).map(r => [r.date, r]));
+    datasets.push(barDataset(`${pool === 'antpool' ? 'Antpool' : 'F2Pool'} FPPS`, dates.map(d => map[d]?.fpps_earnings_btc ?? null), colors[i]));
+    datasets.push(barDataset(`${pool === 'antpool' ? 'Antpool' : 'F2Pool'} 奖励`, dates.map(d => map[d]?.rewards_btc ?? null), colors[i] + '77'));
+  });
+
+  new Chart(document.getElementById('chart-earnings-split'), {
+    type: 'bar',
+    data: { labels: dates, datasets },
+    options: { ...baseOpts, scales: { ...baseOpts.scales, x: { ...baseOpts.scales.x, stacked: true }, y: { ...baseOpts.scales.y, stacked: true } } },
+  });
+}
+
+function renderTable(rows) {
+  const recent = rows.slice(0, 60);
+  document.getElementById('table-body').innerHTML = recent.map(r => `
+    <tr>
+      <td>${r.date}</td>
+      <td><span class="pool-badge ${r.pool}">${r.pool === 'antpool' ? 'Antpool' : 'F2Pool'}</span></td>
+      <td>${fmt(r.hashrate_th)}</td>
+      <td>${fmt(r.own_hashrate_th)}</td>
+      <td>${fmt(r.transferred_hashrate_th)}</td>
+      <td>${fmtBTC(r.fpps_earnings_btc)}</td>
+      <td>${fmtBTC(r.rewards_btc)}</td>
+      <td>${fmtBTC(r.total_earnings_btc)}</td>
+    </tr>`).join('');
+}
+
+// ── 主入口 ───────────────────────────────────────────────────
+async function init() {
+  try {
+    const { data, error } = await db
+      .from('daily_mining_stats')
+      .select('*')
+      .order('date', { ascending: false })
+      .limit(120);
+
+    if (error) throw error;
+    if (!data || data.length === 0) throw new Error('暂无数据');
+
+    allRows = data;
+
+    renderSummaryCards(data);
+    renderHashrateChart(data);
+    renderHashrateSplitChart(data);
+    renderEarningsChart(data);
+    renderEarningsSplitChart(data);
+    renderTable(data);
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('last-updated').textContent =
+      '最后更新：' + new Date().toLocaleString('zh-CN');
+
+  } catch (err) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('error').style.display = 'block';
+    document.getElementById('error').textContent = '加载失败：' + err.message;
+    console.error(err);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
